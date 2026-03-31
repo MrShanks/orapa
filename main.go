@@ -102,7 +102,7 @@ func (s *Shape) Bounds() (int, int, int, int) {
 	return s.gridX + int(math.Round(minX)), s.gridY + int(math.Round(minY)), s.gridX + int(math.Round(maxX)), s.gridY + int(math.Round(maxY))
 }
 
-// --- Ray PHYSICS ENGINE ---
+// --- OPTICAL PHYSICS ENGINE ---
 
 type RaySegment struct {
 	Start GridPoint
@@ -324,6 +324,17 @@ func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
 	return &RayResult{Segments: segments, FinalText: "Trapped in Loop", FinalColor: color.White}
 }
 
+func pointInPolygon(px, py float64, poly []GridPoint) bool {
+	inside := false
+	for i, j := 0, len(poly)-1; i < len(poly); j, i = i, i+1 {
+		if ((poly[i].Y > py) != (poly[j].Y > py)) &&
+			(px < (poly[j].X-poly[i].X)*(py-poly[i].Y)/(poly[j].Y-poly[i].Y)+poly[i].X) {
+			inside = !inside
+		}
+	}
+	return inside
+}
+
 // --- MAIN GAME LOGIC ---
 
 type Game struct {
@@ -331,6 +342,7 @@ type Game struct {
 	selectedIndex int
 	defaultFace   text.Face
 
+	// Laser Ray State
 	rayActive bool
 	rayFrame  int
 	rayStartX float64
@@ -338,6 +350,11 @@ type Game struct {
 	rayDirX   float64
 	rayDirY   float64
 	lastRay   *RayResult
+
+	// Mouse Dragging State
+	isDragging     bool
+	dragMouseGridX int
+	dragMouseGridY int
 }
 
 func (g *Game) Update() error {
@@ -349,6 +366,7 @@ func (g *Game) Update() error {
 	oldX, oldY, oldRot := s.gridX, s.gridY, s.rotationSteps
 	moved, rotated := false, false
 
+	// --- KEYBOARD MOVEMENT ---
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || inpututil.IsKeyJustPressed(ebiten.KeyH) {
 		s.gridX--
 		moved = true
@@ -371,6 +389,100 @@ func (g *Game) Update() error {
 		g.selectedIndex = (g.selectedIndex + 1) % len(g.shapes)
 	}
 
+	// --- MOUSE CLICK Select, Drag Start, or Laser ---
+	mx, my := ebiten.CursorPosition()
+	mouseXGrid := int(math.Floor(float64(mx-gridOffsetX) / float64(tileSize)))
+	mouseYGrid := int(math.Floor(float64(my-gridOffsetY) / float64(tileSize)))
+
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		clickedFired := false
+		clickedShape := false
+
+		// Convert Screen Pixels to Logical Grid Coordinates for precise shape clicking
+		floatMouseXGrid := float64(mx-gridOffsetX) / float64(tileSize)
+		floatMouseYGrid := float64(my-gridOffsetY) / float64(tileSize)
+
+		// Select Shape & Start Dragging
+		for i := len(g.shapes) - 1; i >= 0; i-- {
+			shape := g.shapes[i]
+			globalPoints := make([]GridPoint, len(shape.localPoints))
+			for j, lp := range shape.localPoints {
+				globalPoints[j] = GridPoint{float64(shape.gridX) + lp.X, float64(shape.gridY) + lp.Y}
+			}
+
+			if pointInPolygon(floatMouseXGrid, floatMouseYGrid, globalPoints) {
+				g.selectedIndex = i
+				clickedShape = true
+
+				// Initialize Drag State
+				g.isDragging = true
+				g.dragMouseGridX = mouseXGrid
+				g.dragMouseGridY = mouseYGrid
+				break
+			}
+		}
+
+		// Fire Laser if no shape was clicked
+		if !clickedShape {
+			for i := range cols {
+				lx, ly := gridOffsetX+(i*tileSize)+20, gridOffsetY-15
+				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(i)+0.5, 0, 0, 1
+					clickedFired = true
+				}
+				lx, ly = gridOffsetX+(i*tileSize)+20, gridOffsetY+(rows*tileSize)+15
+				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(i)+0.5, float64(rows), 0, -1
+					clickedFired = true
+				}
+			}
+			for j := range rows {
+				lx, ly := gridOffsetX-15, gridOffsetY+(j*tileSize)+20
+				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, 0, float64(j)+0.5, 1, 0
+					clickedFired = true
+				}
+				lx, ly = gridOffsetX+(cols*tileSize)+15, gridOffsetY+(j*tileSize)+20
+				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(cols), float64(j)+0.5, -1, 0
+					clickedFired = true
+				}
+			}
+			if !clickedFired {
+				g.rayActive = false
+			}
+		}
+	}
+
+	// --- MOUSE HOLD (Dragging) ---
+	if g.isDragging {
+		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+			deltaX := mouseXGrid - g.dragMouseGridX
+			deltaY := mouseYGrid - g.dragMouseGridY
+
+			if deltaX != 0 || deltaY != 0 {
+				activeShape := g.shapes[g.selectedIndex]
+				activeShape.gridX += deltaX
+				activeShape.gridY += deltaY
+
+				minX, minY, maxX, maxY := activeShape.Bounds()
+				if minX < 0 || maxX > cols || minY < 0 || maxY > rows {
+					// Hit a wall. Revert the move, but keep dragging active
+					activeShape.gridX -= deltaX
+					activeShape.gridY -= deltaY
+				}
+
+				// Reset the drag anchor so the next grid movement is calculated cleanly
+				g.dragMouseGridX = mouseXGrid
+				g.dragMouseGridY = mouseYGrid
+			}
+		} else {
+			// Mouse Released
+			g.isDragging = false
+		}
+	}
+
+	// --- BOUNDARY VALIDATION FOR KEYBOARD ---
 	if moved {
 		if rotated {
 			minX, minY, maxX, maxY := s.Bounds()
@@ -395,39 +507,7 @@ func (g *Game) Update() error {
 		}
 	}
 
-	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
-		mx, my := ebiten.CursorPosition()
-		clickedFired := false
-
-		for i := 0; i < cols; i++ {
-			lx, ly := gridOffsetX+(i*tileSize)+20, gridOffsetY-15
-			if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-				g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(i)+0.5, 0, 0, 1
-				clickedFired = true
-			}
-			lx, ly = gridOffsetX+(i*tileSize)+20, gridOffsetY+(rows*tileSize)+15
-			if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-				g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(i)+0.5, float64(rows), 0, -1
-				clickedFired = true
-			}
-		}
-		for j := 0; j < rows; j++ {
-			lx, ly := gridOffsetX-15, gridOffsetY+(j*tileSize)+20
-			if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-				g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, 0, float64(j)+0.5, 1, 0
-				clickedFired = true
-			}
-			lx, ly = gridOffsetX+(cols*tileSize)+15, gridOffsetY+(j*tileSize)+20
-			if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-				g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(cols), float64(j)+0.5, -1, 0
-				clickedFired = true
-			}
-		}
-		if !clickedFired {
-			g.rayActive = false
-		}
-	}
-
+	// --- LIVE RAY UPDATE ---
 	if g.rayActive {
 		g.rayFrame++
 		g.lastRay = fireRay(g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.shapes)
@@ -452,7 +532,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	msgOp.ColorScale.ScaleWithColor(color.RGBA{200, 200, 100, 255})
 	msgOp.PrimaryAlign = text.AlignCenter
 	msgOp.GeoM.Translate(screenWidth/2, screenHeight-30)
-	text.Draw(screen, "Move: HJKL/Arrows | Rotate: R | Switch: Tab | Fire Ray: Click Labels", g.defaultFace, msgOp)
+	text.Draw(screen, "Move: Drag/HJKL | Rotate: R | Switch: Tab/Click | Fire Ray: Click Labels", g.defaultFace, msgOp)
 
 	gridColor := color.RGBA{80, 85, 95, 255}
 	for i := 0; i <= cols; i++ {
@@ -583,7 +663,7 @@ func main() {
 		},
 	}
 
-	ebiten.SetWindowTitle("Orapa Mine Raycast")
+	ebiten.SetWindowTitle("Orapa Mine Drag & Drop")
 	ebiten.SetWindowSize(screenWidth, screenHeight)
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
