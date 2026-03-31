@@ -521,7 +521,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	// --- DRAW ANIMATED RAYCAST ---
 	if g.lastRay != nil {
-		raySpeed := 0.1
+		raySpeed := 0.2
 		currentDist := float64(g.rayFrame) * raySpeed
 		drawnDist := 0.0
 		totalLen := 0.0
