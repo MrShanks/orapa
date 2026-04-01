@@ -14,13 +14,14 @@ import (
 )
 
 const (
-	screenWidth  = 800
-	screenHeight = 600
+	screenWidth  = 1050
+	screenHeight = 850
 	tileSize     = 40
 	rows         = 8
 	cols         = 10
-	gridOffsetX  = (screenWidth - (cols * tileSize)) / 2
-	gridOffsetY  = (screenHeight-(rows*tileSize))/2 + 10
+	grid1OffsetX = 80
+	grid2OffsetX = 570
+	gridOffsetY  = 190
 )
 
 type GridPoint struct {
@@ -34,15 +35,17 @@ type Shape struct {
 	clr           color.Color
 	logicalColor  string
 	rotationSteps int
+	board         int
 }
 
-func NewShape(points []GridPoint, x, y int, clr color.Color, logColor string) *Shape {
+func NewShape(points []GridPoint, x, y int, clr color.Color, logColor string, board int) *Shape {
 	s := &Shape{
 		basePoints:   points,
 		gridX:        x,
 		gridY:        y,
 		clr:          clr,
 		logicalColor: logColor,
+		board:        board,
 	}
 	s.applyRotation()
 	return s
@@ -100,6 +103,17 @@ func (s *Shape) Bounds() (int, int, int, int) {
 		}
 	}
 	return s.gridX + int(math.Round(minX)), s.gridY + int(math.Round(minY)), s.gridX + int(math.Round(maxX)), s.gridY + int(math.Round(maxY))
+}
+
+func (s *Shape) IsValidPosition() bool {
+	minX, minY, maxX, maxY := s.Bounds()
+	if minX < 0 || maxX > cols {
+		return false
+	}
+	if s.board == 1 {
+		return minY >= 0 && maxY <= rows
+	}
+	return minY >= 0 && maxY <= rows+8
 }
 
 // --- OPTICAL PHYSICS ENGINE ---
@@ -343,68 +357,131 @@ type Game struct {
 	defaultFace   text.Face
 
 	// Laser Ray State
-	rayActive bool
-	rayFrame  int
-	rayStartX float64
-	rayStartY float64
-	rayDirX   float64
-	rayDirY   float64
-	lastRay   *RayResult
+	rayActive      bool
+	rayFrame       int
+	rayStartX      float64
+	rayStartY      float64
+	rayDirX        float64
+	rayDirY        float64
+	lastRay        *RayResult
+	activeRayBoard int
 
 	// Mouse Dragging State
 	isDragging     bool
 	dragMouseGridX int
 	dragMouseGridY int
+
+	// Intel Notes State
+	notes       []string
+	currentNote string
+	isTyping    bool
 }
 
 func (g *Game) Update() error {
-	if len(g.shapes) == 0 {
-		return nil
+	// --- TYPING LOGIC ---
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		if g.isTyping {
+			if g.currentNote != "" && len(g.notes) < 30 {
+				g.notes = append(g.notes, g.currentNote)
+			}
+			g.currentNote = ""
+			g.isTyping = false
+		} else {
+			g.isTyping = true
+		}
 	}
-	s := g.shapes[g.selectedIndex]
 
-	oldX, oldY, oldRot := s.gridX, s.gridY, s.rotationSteps
+	if g.isTyping {
+		g.currentNote += string(ebiten.InputChars())
+		runes := []rune(g.currentNote)
+		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
+			if len(runes) > 0 {
+				g.currentNote = string(runes[:len(runes)-1])
+			} else if len(g.notes) > 0 {
+				g.notes = g.notes[:len(g.notes)-1]
+			}
+		}
+	}
+
+	// --- KEYBOARD MOVEMENT (Only if NOT typing!) ---
 	moved, rotated := false, false
+	s := g.shapes[g.selectedIndex]
+	oldX, oldY, oldRot := s.gridX, s.gridY, s.rotationSteps
 
-	// --- KEYBOARD MOVEMENT ---
-	if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || inpututil.IsKeyJustPressed(ebiten.KeyH) {
-		s.gridX--
-		moved = true
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || inpututil.IsKeyJustPressed(ebiten.KeyL) {
-		s.gridX++
-		moved = true
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyK) {
-		s.gridY--
-		moved = true
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyJ) {
-		s.gridY++
-		moved = true
-	} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
-		s.Rotate()
-		moved = true
-		rotated = true
+	if !g.isTyping && len(g.shapes) > 0 {
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || inpututil.IsKeyJustPressed(ebiten.KeyH) {
+			s.gridX--
+			moved = true
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || inpututil.IsKeyJustPressed(ebiten.KeyL) {
+			s.gridX++
+			moved = true
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyK) {
+			s.gridY--
+			moved = true
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyJ) {
+			s.gridY++
+			moved = true
+		} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+			s.Rotate()
+			moved = true
+			rotated = true
+		}
+
+		if inpututil.IsKeyJustPressed(ebiten.KeyTab) {
+			g.selectedIndex = (g.selectedIndex + 1) % len(g.shapes)
+		}
 	}
 
-	if inpututil.IsKeyJustPressed(ebiten.KeyTab) {
-		g.selectedIndex = (g.selectedIndex + 1) % len(g.shapes)
+	if moved {
+		if rotated {
+			minX, minY, maxX, maxY := s.Bounds()
+			if maxX > cols {
+				s.gridX -= (maxX - cols)
+			}
+			if s.board == 1 && maxY > rows {
+				s.gridY -= (maxY - rows)
+			}
+			if s.board == 2 && maxY > rows+8 {
+				s.gridY -= (maxY - (rows + 8))
+			}
+			if minX < 0 {
+				s.gridX += (0 - minX)
+			}
+			if minY < 0 {
+				s.gridY += (0 - minY)
+			}
+		}
+
+		if !s.IsValidPosition() {
+			s.gridX, s.gridY, s.rotationSteps = oldX, oldY, oldRot
+			s.applyRotation()
+		}
 	}
 
-	// --- MOUSE CLICK Select, Drag Start, or Laser ---
+	// --- MOUSE LOGIC ---
 	mx, my := ebiten.CursorPosition()
-	mouseXGrid := int(math.Floor(float64(mx-gridOffsetX) / float64(tileSize)))
+
+	offsetX := float64(grid1OffsetX)
+	if len(g.shapes) > 0 && g.shapes[g.selectedIndex].board == 2 {
+		offsetX = float64(grid2OffsetX)
+	}
+	mouseXGrid := int(math.Floor((float64(mx) - offsetX) / float64(tileSize)))
 	mouseYGrid := int(math.Floor(float64(my-gridOffsetY) / float64(tileSize)))
 
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
 		clickedFired := false
 		clickedShape := false
 
-		// Convert Screen Pixels to Logical Grid Coordinates for precise shape clicking
-		floatMouseXGrid := float64(mx-gridOffsetX) / float64(tileSize)
-		floatMouseYGrid := float64(my-gridOffsetY) / float64(tileSize)
-
-		// Select Shape & Start Dragging
 		for i := len(g.shapes) - 1; i >= 0; i-- {
 			shape := g.shapes[i]
+			shapeOffsetX := float64(grid1OffsetX)
+			if shape.board == 2 {
+				shapeOffsetX = float64(grid2OffsetX)
+			}
+
+			floatMouseXGrid := (float64(mx) - shapeOffsetX) / float64(tileSize)
+			floatMouseYGrid := float64(my-gridOffsetY) / float64(tileSize)
+
 			globalPoints := make([]GridPoint, len(shape.localPoints))
 			for j, lp := range shape.localPoints {
 				globalPoints[j] = GridPoint{float64(shape.gridX) + lp.X, float64(shape.gridY) + lp.Y}
@@ -413,39 +490,50 @@ func (g *Game) Update() error {
 			if pointInPolygon(floatMouseXGrid, floatMouseYGrid, globalPoints) {
 				g.selectedIndex = i
 				clickedShape = true
-
-				// Initialize Drag State
 				g.isDragging = true
-				g.dragMouseGridX = mouseXGrid
+
+				if g.shapes[g.selectedIndex].board == 2 {
+					g.dragMouseGridX = int(math.Floor((float64(mx) - float64(grid2OffsetX)) / float64(tileSize)))
+				} else {
+					g.dragMouseGridX = int(math.Floor((float64(mx) - float64(grid1OffsetX)) / float64(tileSize)))
+				}
 				g.dragMouseGridY = mouseYGrid
 				break
 			}
 		}
 
-		// Fire Laser if no shape was clicked
 		if !clickedShape {
-			for i := range cols {
-				lx, ly := gridOffsetX+(i*tileSize)+20, gridOffsetY-15
-				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(i)+0.5, 0, 0, 1
-					clickedFired = true
+			offsets := []struct {
+				id int
+				x  int
+			}{{1, grid1OffsetX}} // Restricted laser strictly to Board 1
+
+			for _, bd := range offsets {
+				bOffX := bd.x
+
+				for i := range cols {
+					lx, ly := bOffX+(i*tileSize)+20, gridOffsetY-15
+					if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, 0, 0, 1, bd.id
+						clickedFired = true
+					}
+					lx, ly = bOffX+(i*tileSize)+20, gridOffsetY+(rows*tileSize)+15
+					if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, float64(rows), 0, -1, bd.id
+						clickedFired = true
+					}
 				}
-				lx, ly = gridOffsetX+(i*tileSize)+20, gridOffsetY+(rows*tileSize)+15
-				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(i)+0.5, float64(rows), 0, -1
-					clickedFired = true
-				}
-			}
-			for j := range rows {
-				lx, ly := gridOffsetX-15, gridOffsetY+(j*tileSize)+20
-				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, 0, float64(j)+0.5, 1, 0
-					clickedFired = true
-				}
-				lx, ly = gridOffsetX+(cols*tileSize)+15, gridOffsetY+(j*tileSize)+20
-				if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
-					g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY = true, 0, float64(cols), float64(j)+0.5, -1, 0
-					clickedFired = true
+				for j := range rows {
+					lx, ly := bOffX-15, gridOffsetY+(j*tileSize)+20
+					if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, 0, float64(j)+0.5, 1, 0, bd.id
+						clickedFired = true
+					}
+					lx, ly = bOffX+(cols*tileSize)+15, gridOffsetY+(j*tileSize)+20
+					if math.Hypot(float64(mx-lx), float64(my-ly)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(cols), float64(j)+0.5, -1, 0, bd.id
+						clickedFired = true
+					}
 				}
 			}
 			if !clickedFired {
@@ -454,7 +542,6 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// --- MOUSE HOLD (Dragging) ---
 	if g.isDragging {
 		if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
 			deltaX := mouseXGrid - g.dragMouseGridX
@@ -465,52 +552,30 @@ func (g *Game) Update() error {
 				activeShape.gridX += deltaX
 				activeShape.gridY += deltaY
 
-				minX, minY, maxX, maxY := activeShape.Bounds()
-				if minX < 0 || maxX > cols || minY < 0 || maxY > rows {
-					// Hit a wall. Revert the move, but keep dragging active
+				if !activeShape.IsValidPosition() {
 					activeShape.gridX -= deltaX
 					activeShape.gridY -= deltaY
 				}
 
-				// Reset the drag anchor so the next grid movement is calculated cleanly
 				g.dragMouseGridX = mouseXGrid
 				g.dragMouseGridY = mouseYGrid
 			}
 		} else {
-			// Mouse Released
 			g.isDragging = false
 		}
 	}
 
-	// --- BOUNDARY VALIDATION FOR KEYBOARD ---
-	if moved {
-		if rotated {
-			minX, minY, maxX, maxY := s.Bounds()
-			if maxX > cols {
-				s.gridX -= (maxX - cols)
-			}
-			if maxY > rows {
-				s.gridY -= (maxY - rows)
-			}
-			if minX < 0 {
-				s.gridX += (0 - minX)
-			}
-			if minY < 0 {
-				s.gridY += (0 - minY)
-			}
-		}
-
-		minX, minY, maxX, maxY := s.Bounds()
-		if minX < 0 || maxX > cols || minY < 0 || maxY > rows {
-			s.gridX, s.gridY, s.rotationSteps = oldX, oldY, oldRot
-			s.applyRotation()
-		}
-	}
-
-	// --- LIVE RAY UPDATE ---
 	if g.rayActive {
 		g.rayFrame++
-		g.lastRay = fireRay(g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.shapes)
+
+		boardShapes := make([]*Shape, 0)
+		for _, shape := range g.shapes {
+			if shape.board == g.activeRayBoard {
+				boardShapes = append(boardShapes, shape)
+			}
+		}
+
+		g.lastRay = fireRay(g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, boardShapes)
 	} else {
 		g.lastRay = nil
 	}
@@ -521,59 +586,88 @@ func (g *Game) Update() error {
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{50, 55, 65, 255})
 
+	// --- DRAW BOLD TITLE ---
+	titleStr := "ORAPA MINES"
 	titleOp := &text.DrawOptions{}
 	titleOp.ColorScale.ScaleWithColor(color.White)
 	titleOp.PrimaryAlign = text.AlignCenter
 	titleOp.GeoM.Scale(2.5, 2.5)
-	titleOp.GeoM.Translate(screenWidth/2, 40)
-	text.Draw(screen, "ORAPA", g.defaultFace, titleOp)
 
-	msgOp := &text.DrawOptions{}
-	msgOp.ColorScale.ScaleWithColor(color.RGBA{200, 200, 100, 255})
-	msgOp.PrimaryAlign = text.AlignCenter
-	msgOp.GeoM.Translate(screenWidth/2, screenHeight-30)
-	text.Draw(screen, "Move: Drag/HJKL | Rotate: R | Switch: Tab/Click | Fire Ray: Click Labels", g.defaultFace, msgOp)
+	// Simulated bold by rendering text multiple times with offsets
+	for dx := -1.0; dx <= 1.0; dx += 1.0 {
+		for dy := -1.0; dy <= 1.0; dy += 1.0 {
+			// Center at Y=30
+			titleOp.GeoM.Reset()
+			titleOp.GeoM.Scale(2.5, 2.5)
+			titleOp.GeoM.Translate(screenWidth/2+dx, 30+dy)
+			text.Draw(screen, titleStr, g.defaultFace, titleOp)
+		}
+	}
+
+	// SUBTITLE (Moved down to Y=75 for better spacing)
+	subOp := &text.DrawOptions{}
+	subOp.ColorScale.ScaleWithColor(color.RGBA{200, 200, 100, 255})
+	subOp.PrimaryAlign = text.AlignCenter
+	subOp.LineSpacing = 18
+	subOp.GeoM.Translate(screenWidth/2, 75)
+	text.Draw(screen, "Opponent puzzle (Left) | Guessing Board (Right)\nDrag shapes into the grid to guess the layout!", g.defaultFace, subOp)
+
+	cmdOp := &text.DrawOptions{}
+	cmdOp.ColorScale.ScaleWithColor(color.RGBA{150, 150, 150, 255})
+	cmdOp.PrimaryAlign = text.AlignCenter
+	cmdOp.GeoM.Translate(screenWidth/2, screenHeight-25)
+	text.Draw(screen, "Move: Drag/HJKL | Rotate: R | Switch: Tab/Click | Fire Ray: Click Labels | Note: Enter", g.defaultFace, cmdOp)
 
 	gridColor := color.RGBA{80, 85, 95, 255}
-	for i := 0; i <= cols; i++ {
-		x := float32(gridOffsetX + (i * tileSize))
-		vector.StrokeLine(screen, x, gridOffsetY, x, gridOffsetY+(rows*tileSize), 1, gridColor, false)
-	}
-	for j := 0; j <= rows; j++ {
-		y := float32(gridOffsetY + (j * tileSize))
-		vector.StrokeLine(screen, gridOffsetX, y, gridOffsetX+(cols*tileSize), y, 1, gridColor, false)
-	}
+	offsets := []int{grid1OffsetX, grid2OffsetX}
 
-	white := color.White
-	leftLetters := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
-	bottomLetters := []string{"i", "j", "k", "l", "m", "n", "o", "p", "q", "r"}
+	for _, bOffX := range offsets {
+		for i := 0; i <= cols; i++ {
+			x := float32(bOffX + (i * tileSize))
+			vector.StrokeLine(screen, x, float32(gridOffsetY), x, float32(gridOffsetY+(rows*tileSize)), 1, gridColor, false)
+		}
+		for j := 0; j <= rows; j++ {
+			y := float32(gridOffsetY + (j * tileSize))
+			vector.StrokeLine(screen, float32(bOffX), y, float32(bOffX+(cols*tileSize)), y, 1, gridColor, false)
+		}
 
-	txtOp := &text.DrawOptions{}
-	txtOp.ColorScale.ScaleWithColor(white)
-	txtOp.PrimaryAlign = text.AlignCenter
+		white := color.White
+		leftLetters := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+		bottomLetters := []string{"i", "j", "k", "l", "m", "n", "o", "p", "q", "r"}
 
-	for i := range cols {
-		txtOp.GeoM.Reset()
-		txtOp.GeoM.Translate(float64(gridOffsetX+(i*tileSize)+20), float64(gridOffsetY-15))
-		text.Draw(screen, fmt.Sprintf("%d", i+1), g.defaultFace, txtOp)
+		txtOp := &text.DrawOptions{}
+		txtOp.ColorScale.ScaleWithColor(white)
+		txtOp.PrimaryAlign = text.AlignCenter
 
-		txtOp.GeoM.Reset()
-		txtOp.GeoM.Translate(float64(gridOffsetX+(i*tileSize)+20), float64(gridOffsetY+(rows*tileSize)+15))
-		text.Draw(screen, bottomLetters[i], g.defaultFace, txtOp)
-	}
-	for j := range rows {
-		txtOp.GeoM.Reset()
-		txtOp.GeoM.Translate(float64(gridOffsetX-15), float64(gridOffsetY+(j*tileSize)+20))
-		text.Draw(screen, leftLetters[j], g.defaultFace, txtOp)
+		for i := range cols {
+			txtOp.GeoM.Reset()
+			txtOp.GeoM.Translate(float64(bOffX+(i*tileSize)+20), float64(gridOffsetY-15))
+			text.Draw(screen, fmt.Sprintf("%d", i+1), g.defaultFace, txtOp)
 
-		txtOp.GeoM.Reset()
-		txtOp.GeoM.Translate(float64(gridOffsetX+(cols*tileSize)+15), float64(gridOffsetY+(j*tileSize)+20))
-		text.Draw(screen, fmt.Sprintf("%d", j+11), g.defaultFace, txtOp)
+			txtOp.GeoM.Reset()
+			txtOp.GeoM.Translate(float64(bOffX+(i*tileSize)+20), float64(gridOffsetY+(rows*tileSize)+15))
+			text.Draw(screen, bottomLetters[i], g.defaultFace, txtOp)
+		}
+		for j := range rows {
+			txtOp.GeoM.Reset()
+			txtOp.GeoM.Translate(float64(bOffX-15), float64(gridOffsetY+(j*tileSize)+20))
+			text.Draw(screen, leftLetters[j], g.defaultFace, txtOp)
+
+			txtOp.GeoM.Reset()
+			txtOp.GeoM.Translate(float64(bOffX+(cols*tileSize)+15), float64(gridOffsetY+(j*tileSize)+20))
+			text.Draw(screen, fmt.Sprintf("%d", j+11), g.defaultFace, txtOp)
+		}
 	}
 
 	for idx, s := range g.shapes {
 		var path vector.Path
-		anchorX := float32(gridOffsetX + (s.gridX * tileSize))
+
+		bOffX := grid1OffsetX
+		if s.board == 2 {
+			bOffX = grid2OffsetX
+		}
+
+		anchorX := float32(bOffX + (s.gridX * tileSize))
 		anchorY := float32(gridOffsetY + (s.gridY * tileSize))
 
 		for i, p := range s.localPoints {
@@ -599,12 +693,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 	}
 
-	// --- DRAW ANIMATED RAYCAST ---
 	if g.lastRay != nil {
 		raySpeed := 0.2
 		currentDist := float64(g.rayFrame) * raySpeed
 		drawnDist := 0.0
 		totalLen := 0.0
+
+		activeOffX := float32(grid1OffsetX)
+		if g.activeRayBoard == 2 {
+			activeOffX = float32(grid2OffsetX)
+		}
 
 		for _, seg := range g.lastRay.Segments {
 			segLen := math.Hypot(seg.End.X-seg.Start.X, seg.End.Y-seg.Start.Y)
@@ -621,8 +719,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 			ratio := drawLen / segLen
 
-			x1, y1 := float32(gridOffsetX+seg.Start.X*tileSize), float32(gridOffsetY+seg.Start.Y*tileSize)
-			x2 := float32(gridOffsetX + (seg.Start.X+(seg.End.X-seg.Start.X)*ratio)*tileSize)
+			x1, y1 := activeOffX+float32(seg.Start.X*tileSize), float32(gridOffsetY+seg.Start.Y*tileSize)
+			x2 := activeOffX + float32((seg.Start.X+(seg.End.X-seg.Start.X)*ratio)*tileSize)
 			y2 := float32(gridOffsetY + (seg.Start.Y+(seg.End.Y-seg.Start.Y)*ratio)*tileSize)
 
 			vector.StrokeLine(screen, x1, y1, x2, y2, 4, seg.Color, false)
@@ -633,9 +731,49 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			resOp := &text.DrawOptions{}
 			resOp.ColorScale.ScaleWithColor(g.lastRay.FinalColor)
 			resOp.LineSpacing = 16
-			resOp.GeoM.Translate(float64(gridOffsetX+(cols*tileSize)+40), float64(screenHeight/2-20))
+			resOp.PrimaryAlign = text.AlignCenter
+			resOp.GeoM.Translate(float64(activeOffX)+float64(cols*tileSize)/2, float64(gridOffsetY-90))
 			text.Draw(screen, "SCAN REPORT\n-----------\n"+g.lastRay.FinalText, g.defaultFace, resOp)
 		}
+	}
+
+	// --- DRAW INTELLIGENCE LOG (Notes) ---
+	notesStartX := float64(grid1OffsetX)
+
+	notesStartY := float64(gridOffsetY + (rows * tileSize) + 80)
+
+	vector.StrokeLine(screen, float32(notesStartX-10), float32(notesStartY-30), float32(notesStartX+410), float32(notesStartY-30), 1, gridColor, false)
+	vector.StrokeLine(screen, float32(notesStartX-10), float32(notesStartY+210), float32(notesStartX+410), float32(notesStartY+210), 1, gridColor, false)
+	vector.StrokeLine(screen, float32(notesStartX-10), float32(notesStartY-30), float32(notesStartX-10), float32(notesStartY+210), 1, gridColor, false)
+	vector.StrokeLine(screen, float32(notesStartX+410), float32(notesStartY-30), float32(notesStartX+410), float32(notesStartY+210), 1, gridColor, false)
+
+	titleStr = "Notes (Press ENTER to log note)"
+	if g.isTyping {
+		titleStr = "TYPING... (Press ENTER to save) > " + g.currentNote + "_"
+	}
+
+	noteTitleOp := &text.DrawOptions{}
+	if g.isTyping {
+		noteTitleOp.ColorScale.ScaleWithColor(color.RGBA{255, 165, 0, 255})
+	} else {
+		noteTitleOp.ColorScale.ScaleWithColor(color.RGBA{150, 150, 150, 255})
+	}
+	noteTitleOp.GeoM.Translate(notesStartX, notesStartY-20)
+	text.Draw(screen, titleStr, g.defaultFace, noteTitleOp)
+
+	noteOp := &text.DrawOptions{}
+	noteOp.ColorScale.ScaleWithColor(color.White)
+
+	for i, n := range g.notes {
+		col := i / 10
+		row := i % 10
+
+		x := notesStartX + float64(col*135)
+		y := notesStartY + float64(row*20) + 10
+
+		noteOp.GeoM.Reset()
+		noteOp.GeoM.Translate(x, y)
+		text.Draw(screen, fmt.Sprintf("%d. %s", i+1, n), g.defaultFace, noteOp)
 	}
 }
 
@@ -653,17 +791,25 @@ func main() {
 	game := &Game{
 		defaultFace: f,
 		shapes: []*Shape{
-			NewShape(triIsoPoints, 1, 1, color.NRGBA{50, 100, 255, 200}, "blue"),
-			NewShape(triIsoPoints, 1, 4, color.NRGBA{255, 255, 255, 240}, "white"),
-			NewShape(rhombusPoints, 6, 1, color.NRGBA{255, 255, 255, 240}, "white"),
-			NewShape(triRightPoints, 6, 5, color.NRGBA{255, 255, 0, 200}, "yellow"),
-			NewShape(triSmallIsoPoints, 0, 6, color.NRGBA{255, 255, 255, 50}, "transparent"),
-			NewShape(triSmallIsoPoints, 3, 6, color.NRGBA{0, 0, 0, 200}, "black"),
-			NewShape(zShapePoints, 5, 3, color.NRGBA{255, 50, 50, 200}, "red"),
+			NewShape(triIsoPoints, 1, 1, color.NRGBA{50, 100, 255, 200}, "blue", 1),
+			NewShape(triIsoPoints, 1, 4, color.NRGBA{255, 255, 255, 240}, "white", 1),
+			NewShape(rhombusPoints, 6, 1, color.NRGBA{255, 255, 240, 240}, "white", 1),
+			NewShape(triRightPoints, 6, 5, color.NRGBA{255, 255, 0, 200}, "yellow", 1),
+			NewShape(triSmallIsoPoints, 0, 6, color.NRGBA{255, 255, 255, 50}, "transparent", 1),
+			NewShape(triSmallIsoPoints, 3, 6, color.NRGBA{0, 0, 0, 200}, "black", 1),
+			NewShape(zShapePoints, 5, 3, color.NRGBA{255, 50, 50, 200}, "red", 1),
+
+			NewShape(triIsoPoints, 0, 9, color.NRGBA{50, 100, 255, 200}, "blue", 2),
+			NewShape(triIsoPoints, 5, 9, color.NRGBA{255, 255, 255, 240}, "white", 2),
+			NewShape(triRightPoints, 0, 12, color.NRGBA{255, 255, 0, 200}, "yellow", 2),
+			NewShape(rhombusPoints, 3, 12, color.NRGBA{255, 255, 255, 240}, "white", 2),
+			NewShape(zShapePoints, 6, 12, color.NRGBA{255, 50, 50, 200}, "red", 2),
+			NewShape(triSmallIsoPoints, 6, 14, color.NRGBA{255, 255, 255, 50}, "transparent", 2),
+			NewShape(triSmallIsoPoints, 3, 14, color.NRGBA{0, 0, 0, 200}, "black", 2),
 		},
 	}
 
-	ebiten.SetWindowTitle("Orapa Mine Drag & Drop")
+	ebiten.SetWindowTitle("Orapa Mine")
 	ebiten.SetWindowSize(screenWidth, screenHeight)
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
