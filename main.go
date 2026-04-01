@@ -21,7 +21,7 @@ const (
 	cols         = 10
 	grid1OffsetX = 80
 	grid2OffsetX = 570
-	gridOffsetY  = 150
+	gridOffsetY  = 190
 )
 
 type GridPoint struct {
@@ -506,7 +506,7 @@ func (g *Game) Update() error {
 			offsets := []struct {
 				id int
 				x  int
-			}{{1, grid1OffsetX}, {2, grid2OffsetX}}
+			}{{1, grid1OffsetX}} // Restricted laser strictly to Board 1
 
 			for _, bd := range offsets {
 				bOffX := bd.x
@@ -586,13 +586,25 @@ func (g *Game) Update() error {
 func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{50, 55, 65, 255})
 
+	// --- DRAW BOLD TITLE ---
+	titleStr := "ORAPA MINES"
 	titleOp := &text.DrawOptions{}
 	titleOp.ColorScale.ScaleWithColor(color.White)
 	titleOp.PrimaryAlign = text.AlignCenter
 	titleOp.GeoM.Scale(2.5, 2.5)
-	titleOp.GeoM.Translate(screenWidth/2, 35)
-	text.Draw(screen, "ORAPA MINES", g.defaultFace, titleOp)
 
+	// Simulated bold by rendering text multiple times with offsets
+	for dx := -1.0; dx <= 1.0; dx += 1.0 {
+		for dy := -1.0; dy <= 1.0; dy += 1.0 {
+			// Center at Y=30
+			titleOp.GeoM.Reset()
+			titleOp.GeoM.Scale(2.5, 2.5)
+			titleOp.GeoM.Translate(screenWidth/2+dx, 30+dy)
+			text.Draw(screen, titleStr, g.defaultFace, titleOp)
+		}
+	}
+
+	// SUBTITLE (Moved down to Y=75 for better spacing)
 	subOp := &text.DrawOptions{}
 	subOp.ColorScale.ScaleWithColor(color.RGBA{200, 200, 100, 255})
 	subOp.PrimaryAlign = text.AlignCenter
@@ -720,7 +732,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			resOp.ColorScale.ScaleWithColor(g.lastRay.FinalColor)
 			resOp.LineSpacing = 16
 			resOp.PrimaryAlign = text.AlignCenter
-			resOp.GeoM.Translate(float64(activeOffX)+float64(cols*tileSize)/2, float64(gridOffsetY-55))
+			resOp.GeoM.Translate(float64(activeOffX)+float64(cols*tileSize)/2, float64(gridOffsetY-90))
 			text.Draw(screen, "SCAN REPORT\n-----------\n"+g.lastRay.FinalText, g.defaultFace, resOp)
 		}
 	}
@@ -735,7 +747,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	vector.StrokeLine(screen, float32(notesStartX-10), float32(notesStartY-30), float32(notesStartX-10), float32(notesStartY+210), 1, gridColor, false)
 	vector.StrokeLine(screen, float32(notesStartX+410), float32(notesStartY-30), float32(notesStartX+410), float32(notesStartY+210), 1, gridColor, false)
 
-	titleStr := "Notes (Press ENTER to log note)"
+	titleStr = "Notes (Press ENTER to log note)"
 	if g.isTyping {
 		titleStr = "TYPING... (Press ENTER to save) > " + g.currentNote + "_"
 	}
