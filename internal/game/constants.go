@@ -10,7 +10,3 @@ const (
 	grid2OffsetX = 570
 	gridOffsetY  = 190
 )
-
-type GridPoint struct {
-	X, Y float64
-}

@@ -16,6 +16,7 @@ type RayResult struct {
 	Segments   []RaySegment
 	FinalText  string
 	FinalColor color.Color
+	HitShapes  []*Shape
 }
 
 func calculateRayColor(hitColors map[string]bool) (string, color.Color) {
@@ -112,10 +113,33 @@ func lineIntersect(p, d, a, b GridPoint) (float64, bool, GridPoint) {
 	t := ((a.X-p.X)*vY - (a.Y-p.Y)*vX) / denom
 	u := ((a.X-p.X)*d.Y - (a.Y-p.Y)*d.X) / denom
 
-	if t > 0.0001 && u >= 0 && u <= 1 {
+	if t > -1e-5 && u >= -1e-5 && u <= 1.00001 {
 		return t, true, GridPoint{X: p.X + t*d.X, Y: p.Y + t*d.Y}
 	}
 	return 0, false, GridPoint{}
+}
+
+// Used for Board Validation Line of Sight
+func getFirstHit(startX, startY, dirX, dirY float64, shapes []*Shape) *Shape {
+	pos := GridPoint{startX - dirX*0.01, startY - dirY*0.01}
+	dir := GridPoint{dirX, dirY}
+	var closestT float64 = math.MaxFloat64
+	var hitShape *Shape
+
+	for _, s := range shapes {
+		globalPoints := s.GlobalPoints()
+		for i := range globalPoints {
+			a := globalPoints[i]
+			b := globalPoints[(i+1)%len(globalPoints)]
+
+			t, hit, _ := lineIntersect(pos, dir, a, b)
+			if hit && t > 1e-4 && t < closestT {
+				closestT = t
+				hitShape = s
+			}
+		}
+	}
+	return hitShape
 }
 
 func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
@@ -125,6 +149,7 @@ func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
 	_, currentColor := calculateRayColor(hitColors)
 
 	var segments []RaySegment
+	hitSet := make(map[*Shape]bool)
 
 	for range 50 {
 		var closestT float64 = math.MaxFloat64
@@ -133,17 +158,13 @@ func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
 		var hitShape *Shape
 
 		for _, s := range shapes {
-			globalPoints := make([]GridPoint, len(s.localPoints))
-			for i, lp := range s.localPoints {
-				globalPoints[i] = GridPoint{float64(s.gridX) + lp.X, float64(s.gridY) + lp.Y}
-			}
-
+			globalPoints := s.GlobalPoints()
 			for i := range globalPoints {
 				a := globalPoints[i]
 				b := globalPoints[(i+1)%len(globalPoints)]
 
 				t, hit, pt := lineIntersect(pos, dir, a, b)
-				if hit && t < closestT {
+				if hit && t > 1e-4 && t < closestT {
 					closestT = t
 					hitPoint = pt
 					hitShape = s
@@ -159,15 +180,19 @@ func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
 
 		if hitShape != nil {
 			segments = append(segments, RaySegment{Start: pos, End: hitPoint, Color: currentColor})
+			hitSet[hitShape] = true
 
 			if hitShape.logicalColor == "black" {
-				return &RayResult{Segments: segments, FinalText: "Absorbed", FinalColor: color.RGBA{100, 100, 100, 255}}
+				res := &RayResult{Segments: segments, FinalText: "Absorbed", FinalColor: color.RGBA{100, 100, 100, 255}}
+				for s := range hitSet {
+					res.HitShapes = append(res.HitShapes, s)
+				}
+				return res
 			}
 
 			if hitShape.logicalColor != "transparent" {
 				hitColors[hitShape.logicalColor] = true
 			}
-
 			_, currentColor = calculateRayColor(hitColors)
 
 			dot := dir.X*hitNormal.X + dir.Y*hitNormal.Y
@@ -182,7 +207,6 @@ func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
 			dir.X = math.Round(dir.X*100) / 100
 			dir.Y = math.Round(dir.Y*100) / 100
 			pos = hitPoint
-
 		} else {
 			var exitT float64 = math.MaxFloat64
 			if dir.X > 0 {
@@ -216,23 +240,20 @@ func fireRay(startX, startY, dirX, dirY float64, shapes []*Shape) *RayResult {
 			colName, colVal := calculateRayColor(hitColors)
 			exitLabel := getExitLabel(finalPt.X, finalPt.Y)
 
-			return &RayResult{
+			res := &RayResult{
 				Segments:   segments,
 				FinalText:  fmt.Sprintf("Exit: %s\nColor: %s", exitLabel, colName),
 				FinalColor: colVal,
 			}
+			for s := range hitSet {
+				res.HitShapes = append(res.HitShapes, s)
+			}
+			return res
 		}
 	}
-	return &RayResult{Segments: segments, FinalText: "Trapped in Loop", FinalColor: color.White}
-}
-
-func pointInPolygon(px, py float64, poly []GridPoint) bool {
-	inside := false
-	for i, j := 0, len(poly)-1; i < len(poly); j, i = i, i+1 {
-		if ((poly[i].Y > py) != (poly[j].Y > py)) &&
-			(px < (poly[j].X-poly[i].X)*(py-poly[i].Y)/(poly[j].Y-poly[i].Y)+poly[i].X) {
-			inside = !inside
-		}
+	res := &RayResult{Segments: segments, FinalText: "Trapped in Loop", FinalColor: color.White}
+	for s := range hitSet {
+		res.HitShapes = append(res.HitShapes, s)
 	}
-	return inside
+	return res
 }
