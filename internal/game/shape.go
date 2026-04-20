@@ -131,7 +131,7 @@ func onSegmentPoint(p, a, b GridPoint) bool {
 }
 
 func isPointStrictlyInsidePolygon(p GridPoint, poly []GridPoint) bool {
-	for i := 0; i < len(poly); i++ {
+	for i := range poly {
 		a := poly[i]
 		b := poly[(i+1)%len(poly)]
 		if onSegmentPoint(p, a, b) {

@@ -10,6 +10,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"golang.org/x/image/font/basicfont"
+	"slices"
 )
 
 type Game struct {
@@ -92,7 +93,7 @@ func validateBoard(shapes []*Shape) bool {
 		}
 	}
 
-	for i := 0; i < len(b1); i++ {
+	for i := range b1 {
 		for j := i + 1; j < len(b1); j++ {
 			if shapesOverlapOrEdgeTouch(b1[i], b1[j]) {
 				return false
@@ -140,7 +141,7 @@ func (g *Game) Update() error {
 					g.notes = append(g.notes, finalStr)
 				}
 			} else if g.editingIndex >= 0 {
-				g.notes = append(g.notes[:g.editingIndex], g.notes[g.editingIndex+1:]...)
+				g.notes = slices.Delete(g.notes, g.editingIndex, g.editingIndex+1)
 			}
 			g.currentNote = nil
 			g.isTyping = false
@@ -162,7 +163,7 @@ func (g *Game) Update() error {
 
 		if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
 			if g.cursorPos > 0 {
-				g.currentNote = append(g.currentNote[:g.cursorPos-1], g.currentNote[g.cursorPos:]...)
+				g.currentNote = slices.Delete(g.currentNote, g.cursorPos-1, g.cursorPos)
 				g.cursorPos--
 			} else if len(g.currentNote) == 0 && g.editingIndex == -1 && len(g.notes) > 0 {
 				g.notes = g.notes[:len(g.notes)-1]
@@ -542,10 +543,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		for _, seg := range g.lastRay.Segments {
 			sLen := math.Hypot(seg.End.X-seg.Start.X, seg.End.Y-seg.Start.Y)
 			if currentDist > drawnDist {
-				drawLen := currentDist - drawnDist
-				if drawLen > sLen {
-					drawLen = sLen
-				}
+				drawLen := min(currentDist-drawnDist, sLen)
 				ratio := drawLen / sLen
 				x1, y1 := activeOffX+float32(seg.Start.X*tileSize), float32(gridOffsetY+seg.Start.Y*tileSize)
 				x2 := activeOffX + float32((seg.Start.X+(seg.End.X-seg.Start.X)*ratio)*tileSize)

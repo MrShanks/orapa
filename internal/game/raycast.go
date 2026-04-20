@@ -72,18 +72,12 @@ func calculateRayColor(hitColors map[string]bool) (string, color.Color) {
 }
 
 func getExitLabel(x, y float64) string {
-	safeX := int(math.Floor(x))
-	if safeX < 0 {
-		safeX = 0
-	}
+	safeX := max(int(math.Floor(x)), 0)
 	if safeX >= cols {
 		safeX = cols - 1
 	}
 
-	safeY := int(math.Floor(y))
-	if safeY < 0 {
-		safeY = 0
-	}
+	safeY := max(int(math.Floor(y)), 0)
 	if safeY >= rows {
 		safeY = rows - 1
 	}
