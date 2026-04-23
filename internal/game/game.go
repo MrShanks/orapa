@@ -4,16 +4,17 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"slices"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"golang.org/x/image/font/basicfont"
-	"slices"
 )
 
 type Game struct {
+	allShapes     []*Shape
 	shapes        []*Shape
 	selectedIndex int
 	defaultFace   text.Face
@@ -45,34 +46,39 @@ type Game struct {
 
 	resetConfirm  bool
 	board1Invalid bool
+
+	showBlack       bool
+	showTransparent bool
+	showLegend      bool
 }
 
 func New() *Game {
 	f := text.NewGoXFace(basicfont.Face7x13)
 	g := &Game{
-		defaultFace:  f,
-		marks:        make(map[GridPoint]bool),
-		labelMarks:   make(map[string]bool),
-		editingIndex: -1,
+		defaultFace:     f,
+		marks:           make(map[GridPoint]bool),
+		labelMarks:      make(map[string]bool),
+		editingIndex:    -1,
+		showBlack:       true,
+		showTransparent: true,
+		showLegend:      false,
 	}
-	g.initShapes()
+	g.initBoard()
 	return g
 }
 
-func (g *Game) initShapes() {
+func (g *Game) initBoard() {
 	triIsoPoints := []GridPoint{{0, 2}, {4, 2}, {2, 0}}
 	rhombusPoints := []GridPoint{{1, 0}, {0, 1}, {1, 2}, {2, 1}}
 	triRightPoints := []GridPoint{{0, 0}, {0, 2}, {2, 2}}
 	triSmallIsoPoints := []GridPoint{{0, 1}, {2, 1}, {1, 0}}
 	zShapePoints := []GridPoint{{0, 0}, {2, 0}, {3, 1}, {1, 1}}
 
-	g.shapes = []*Shape{
+	g.allShapes = []*Shape{
 		NewShape(triIsoPoints, 1, 1, color.NRGBA{50, 100, 255, 200}, "blue", 1),
 		NewShape(triIsoPoints, 1, 4, color.NRGBA{255, 255, 255, 240}, "white", 1),
 		NewShape(rhombusPoints, 6, 1, color.NRGBA{255, 255, 240, 240}, "white", 1),
 		NewShape(triRightPoints, 6, 5, color.NRGBA{255, 255, 0, 200}, "yellow", 1),
-		NewShape(triSmallIsoPoints, 0, 6, color.NRGBA{255, 255, 255, 50}, "transparent", 1),
-		NewShape(triSmallIsoPoints, 3, 6, color.NRGBA{0, 0, 0, 200}, "black", 1),
 		NewShape(zShapePoints, 5, 3, color.NRGBA{255, 50, 50, 200}, "red", 1),
 
 		NewShape(triIsoPoints, 0, 9, color.NRGBA{50, 100, 255, 200}, "blue", 2),
@@ -80,8 +86,36 @@ func (g *Game) initShapes() {
 		NewShape(triRightPoints, 0, 12, color.NRGBA{255, 255, 0, 200}, "yellow", 2),
 		NewShape(rhombusPoints, 3, 12, color.NRGBA{255, 255, 255, 240}, "white", 2),
 		NewShape(zShapePoints, 6, 12, color.NRGBA{255, 50, 50, 200}, "red", 2),
+
+		NewShape(triSmallIsoPoints, 0, 6, color.NRGBA{255, 255, 255, 50}, "transparent", 1),
 		NewShape(triSmallIsoPoints, 6, 14, color.NRGBA{255, 255, 255, 50}, "transparent", 2),
+
+		NewShape(triSmallIsoPoints, 3, 6, color.NRGBA{0, 0, 0, 200}, "black", 1),
 		NewShape(triSmallIsoPoints, 3, 14, color.NRGBA{0, 0, 0, 200}, "black", 2),
+	}
+
+	g.syncActiveShapes()
+	g.selectedIndex = 0
+}
+
+func (g *Game) syncActiveShapes() {
+	g.shapes = nil
+	for _, s := range g.allShapes {
+		if s.logicalColor == "transparent" && !g.showTransparent {
+			continue
+		}
+		if s.logicalColor == "black" && !g.showBlack {
+			continue
+		}
+		g.shapes = append(g.shapes, s)
+	}
+
+	if len(g.shapes) > 0 {
+		if g.selectedIndex >= len(g.shapes) {
+			g.selectedIndex = len(g.shapes) - 1
+		}
+	} else {
+		g.selectedIndex = 0
 	}
 }
 
@@ -129,6 +163,14 @@ func validateBoard(shapes []*Shape) bool {
 }
 
 func (g *Game) Update() error {
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+		ebiten.SetFullscreen(!ebiten.IsFullscreen())
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) && g.showLegend {
+		g.showLegend = false
+	}
+
 	g.cursorCounter++
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
@@ -179,7 +221,7 @@ func (g *Game) Update() error {
 	}
 
 	moved, rotated := false, false
-	if !g.isTyping && len(g.shapes) > 0 {
+	if !g.isTyping && !g.showLegend && len(g.shapes) > 0 {
 		s := g.shapes[g.selectedIndex]
 		oldX, oldY, oldRot, oldFlip := s.gridX, s.gridY, s.rotationSteps, s.flipped
 
@@ -239,25 +281,54 @@ func (g *Game) Update() error {
 	b2YGrid := int(math.Floor((float64(my) - float64(gridOffsetY)) / float64(tileSize)))
 
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+		clickedToggle := false
+
+		if mx >= ScreenWidth-570 && mx <= ScreenWidth-440 && my >= 20 && my <= 60 {
+			g.showLegend = !g.showLegend
+			clickedToggle = true
+			g.resetConfirm = false
+		}
+
+		if g.showLegend && !clickedToggle {
+			g.showLegend = false
+			clickedToggle = true
+		}
+
 		clickedReset := false
 		clickedNote := false
 
-		if mx >= ScreenWidth-150 && mx <= ScreenWidth-20 && my >= 20 && my <= 60 {
+		if !clickedToggle && mx >= ScreenWidth-150 && mx <= ScreenWidth-20 && my >= 20 && my <= 60 {
 			clickedReset = true
 			if g.resetConfirm {
-				g.initShapes()
+				g.initBoard()
 				g.notes = nil
 				g.marks = make(map[GridPoint]bool)
 				g.labelMarks = make(map[string]bool)
 				g.rayActive, g.resetConfirm = false, false
+				g.lastRay = nil
 			} else {
 				g.resetConfirm = true
 			}
 		}
 
-		notesStartX := float64(grid1OffsetX)
-		notesStartY := float64(gridOffsetY + (rows * tileSize) + 80)
-		if !clickedReset {
+		if !clickedToggle && mx >= ScreenWidth-290 && mx <= ScreenWidth-160 && my >= 20 && my <= 60 {
+			g.showBlack = !g.showBlack
+			g.syncActiveShapes()
+			clickedToggle = true
+			g.resetConfirm = false
+		}
+
+		if !clickedToggle && mx >= ScreenWidth-430 && mx <= ScreenWidth-300 && my >= 20 && my <= 60 {
+			g.showTransparent = !g.showTransparent
+			g.syncActiveShapes()
+			clickedToggle = true
+			g.resetConfirm = false
+		}
+
+		if !clickedReset && !clickedToggle {
+			notesStartX := float64(grid1OffsetX)
+			notesStartY := float64(gridOffsetY + (rows * tileSize) + 80)
+
 			for i := range g.notes {
 				col, row := i/10, i%10
 				nx := notesStartX + float64(col*135)
@@ -273,7 +344,7 @@ func (g *Game) Update() error {
 			}
 		}
 
-		if !clickedReset && !clickedNote {
+		if !clickedReset && !clickedToggle && !clickedNote {
 			g.resetConfirm = false
 			clickedShape := false
 			for i := len(g.shapes) - 1; i >= 0; i-- {
@@ -289,6 +360,10 @@ func (g *Game) Update() error {
 					break
 				}
 			}
+
+			clickedLaserLabel := false
+			clickedB2Label := false
+
 			if !clickedShape {
 				if b2XGrid >= 0 && b2XGrid < cols && b2YGrid >= 0 && b2YGrid < rows {
 					g.isMarking = true
@@ -299,17 +374,21 @@ func (g *Game) Update() error {
 					for i := range cols {
 						if math.Hypot(float64(mx)-(grid1OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY-15)) < 20 {
 							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, 0, 0, 1, 1
+							clickedLaserLabel = true
 						}
 						if math.Hypot(float64(mx)-(grid1OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY+float64(rows*tileSize)+15)) < 20 {
 							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, float64(rows), 0, -1, 1
+							clickedLaserLabel = true
 						}
 					}
 					for j := range rows {
 						if math.Hypot(float64(mx)-(grid1OffsetX-15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
 							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, 0, float64(j)+0.5, 1, 0, 1
+							clickedLaserLabel = true
 						}
 						if math.Hypot(float64(mx)-(grid1OffsetX+float64(cols*tileSize)+15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
 							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(cols), float64(j)+0.5, -1, 0, 1
+							clickedLaserLabel = true
 						}
 					}
 
@@ -319,23 +398,35 @@ func (g *Game) Update() error {
 						if math.Hypot(float64(mx)-(grid2OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY-15)) < 20 {
 							key := fmt.Sprintf("top-%d", i)
 							g.labelMarks[key] = !g.labelMarks[key]
+							clickedB2Label = true
 						}
 						if math.Hypot(float64(mx)-(grid2OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY+float64(rows*tileSize)+15)) < 20 {
 							key := "bot-" + bottomLetters[i]
 							g.labelMarks[key] = !g.labelMarks[key]
+							clickedB2Label = true
 						}
 					}
 					for j := range rows {
 						if math.Hypot(float64(mx)-(grid2OffsetX-15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
 							key := "left-" + leftLetters[j]
 							g.labelMarks[key] = !g.labelMarks[key]
+							clickedB2Label = true
 						}
 						if math.Hypot(float64(mx)-(grid2OffsetX+float64(cols*tileSize)+15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
 							key := fmt.Sprintf("right-%d", j+11)
 							g.labelMarks[key] = !g.labelMarks[key]
+							clickedB2Label = true
 						}
 					}
 				}
+			}
+
+			inGrid1 := mx >= grid1OffsetX && mx <= grid1OffsetX+cols*tileSize && my >= gridOffsetY && my <= gridOffsetY+rows*tileSize
+			inGrid2 := mx >= grid2OffsetX && mx <= grid2OffsetX+cols*tileSize && my >= gridOffsetY && my <= gridOffsetY+rows*tileSize
+
+			if !inGrid1 && !inGrid2 && !clickedLaserLabel && !clickedB2Label && !clickedShape {
+				g.rayActive = false
+				g.lastRay = nil
 			}
 		}
 	}
@@ -401,24 +492,64 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	btnOp.GeoM.Translate(float64(btnX+btnW/2), float64(btnY+12))
 	text.Draw(screen, btnTxt, g.defaultFace, btnOp)
 
+	btnX2, btnY2, btnW2, btnH2 := float32(ScreenWidth-290), float32(20), float32(130), float32(40)
+	btnClr2 := color.RGBA{50, 150, 50, 255}
+	btnTxt2 := "BLACK: ON"
+	if !g.showBlack {
+		btnClr2 = color.RGBA{150, 50, 50, 255}
+		btnTxt2 = "BLACK: OFF"
+	}
+	vector.DrawFilledRect(screen, btnX2, btnY2, btnW2, btnH2, btnClr2, false)
+	btnOp2 := &text.DrawOptions{}
+	btnOp2.ColorScale.ScaleWithColor(color.White)
+	btnOp2.PrimaryAlign = text.AlignCenter
+	btnOp2.GeoM.Translate(float64(btnX2+btnW2/2), float64(btnY2+12))
+	text.Draw(screen, btnTxt2, g.defaultFace, btnOp2)
+
+	btnX3, btnY3, btnW3, btnH3 := float32(ScreenWidth-430), float32(20), float32(130), float32(40)
+	btnClr3 := color.RGBA{50, 150, 50, 255}
+	btnTxt3 := "TRANSP: ON"
+	if !g.showTransparent {
+		btnClr3 = color.RGBA{150, 50, 50, 255}
+		btnTxt3 = "TRANSP: OFF"
+	}
+	vector.DrawFilledRect(screen, btnX3, btnY3, btnW3, btnH3, btnClr3, false)
+	btnOp3 := &text.DrawOptions{}
+	btnOp3.ColorScale.ScaleWithColor(color.White)
+	btnOp3.PrimaryAlign = text.AlignCenter
+	btnOp3.GeoM.Translate(float64(btnX3+btnW3/2), float64(btnY3+12))
+	text.Draw(screen, btnTxt3, g.defaultFace, btnOp3)
+
+	btnX4, btnY4, btnW4, btnH4 := float32(ScreenWidth-570), float32(20), float32(130), float32(40)
+	btnClr4 := color.RGBA{100, 100, 100, 255}
+	if g.showLegend {
+		btnClr4 = color.RGBA{50, 150, 50, 255}
+	}
+	vector.DrawFilledRect(screen, btnX4, btnY4, btnW4, btnH4, btnClr4, false)
+	btnOp4 := &text.DrawOptions{}
+	btnOp4.ColorScale.ScaleWithColor(color.White)
+	btnOp4.PrimaryAlign = text.AlignCenter
+	btnOp4.GeoM.Translate(float64(btnX4+btnW4/2), float64(btnY4+12))
+	text.Draw(screen, "LEGEND", g.defaultFace, btnOp4)
+
 	titleStr := "ORAPA MINES"
 	titleOp := &text.DrawOptions{}
 	titleOp.ColorScale.ScaleWithColor(color.White)
-	titleOp.PrimaryAlign = text.AlignCenter
+	titleOp.PrimaryAlign = text.AlignStart
 	for dx := -1.0; dx <= 1.0; dx += 1.0 {
 		for dy := -1.0; dy <= 1.0; dy += 1.0 {
 			titleOp.GeoM.Reset()
 			titleOp.GeoM.Scale(2.5, 2.5)
-			titleOp.GeoM.Translate(float64(ScreenWidth/2)+dx, 30+dy)
+			titleOp.GeoM.Translate(float64(grid1OffsetX)+dx, 30+dy)
 			text.Draw(screen, titleStr, g.defaultFace, titleOp)
 		}
 	}
 
 	subOp := &text.DrawOptions{}
 	subOp.ColorScale.ScaleWithColor(color.RGBA{200, 200, 100, 255})
-	subOp.PrimaryAlign = text.AlignCenter
+	subOp.PrimaryAlign = text.AlignStart
 	subOp.LineSpacing = 18
-	subOp.GeoM.Translate(float64(ScreenWidth/2), 75)
+	subOp.GeoM.Translate(float64(grid1OffsetX), 65)
 	text.Draw(screen, "Opponent puzzle (Left) | Guessing Board (Right)\nIf Board 1 is RED, your layout is invalid!", g.defaultFace, subOp)
 
 	gridColor1 := color.RGBA{80, 85, 95, 255}
@@ -557,7 +688,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			resOp.ColorScale.ScaleWithColor(g.lastRay.FinalColor)
 			resOp.PrimaryAlign = text.AlignCenter
 			resOp.LineSpacing = 16
-			resOp.GeoM.Translate(float64(activeOffX)+float64(cols*tileSize)/2, float64(gridOffsetY-115))
+			resOp.GeoM.Translate(float64(activeOffX)+float64(cols*tileSize)/2, float64(gridOffsetY-85))
 			text.Draw(screen, "SCAN REPORT\n-----------\n"+g.lastRay.FinalText, g.defaultFace, resOp)
 		}
 	}
@@ -602,7 +733,76 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	cmdOp.ColorScale.ScaleWithColor(color.RGBA{150, 150, 150, 255})
 	cmdOp.PrimaryAlign = text.AlignCenter
 	cmdOp.GeoM.Translate(float64(ScreenWidth/2), float64(ScreenHeight-25))
-	text.Draw(screen, "Move: Drag/HJKL | Rot: R | Flip: F | Tab/Click: Switch | Arrows: Cursor | Note: Enter", g.defaultFace, cmdOp)
+	text.Draw(screen, "Move: Drag/HJKL | Rot: R | Flip: F | Tab/Click: Switch | F11: Fullscreen | Note: Enter", g.defaultFace, cmdOp)
+
+	if g.showLegend {
+		panelX, panelY := float32(150), float32(120)
+		panelW, panelH := float32(ScreenWidth-300), float32(ScreenHeight-240)
+
+		vector.DrawFilledRect(screen, panelX, panelY, panelW, panelH, color.RGBA{30, 35, 45, 240}, false)
+		vector.StrokeRect(screen, panelX, panelY, panelW, panelH, 2, color.RGBA{200, 200, 200, 255}, false)
+
+		legTitleOp := &text.DrawOptions{}
+		legTitleOp.ColorScale.ScaleWithColor(color.White)
+		legTitleOp.PrimaryAlign = text.AlignCenter
+		legTitleOp.GeoM.Scale(2, 2)
+		legTitleOp.GeoM.Translate(float64(ScreenWidth/2), float64(panelY+30))
+		text.Draw(screen, "COLOR MIXING LEGEND", g.defaultFace, legTitleOp)
+
+		type legItem struct {
+			name    string
+			clr     color.Color
+			formula string
+		}
+
+		bases := []legItem{
+			{"Red", color.RGBA{255, 50, 50, 255}, "R"},
+			{"Yellow", color.RGBA{255, 255, 0, 255}, "Y"},
+			{"Blue", color.RGBA{50, 100, 255, 255}, "B"},
+			{"White", color.White, "W"},
+		}
+
+		mixes2 := []legItem{
+			{"Orange", color.RGBA{255, 165, 0, 255}, "R + Y"},
+			{"Green", color.RGBA{0, 255, 0, 255}, "Y + B"},
+			{"Lilla", color.RGBA{150, 0, 255, 255}, "R + B"},
+			{"Pink", color.RGBA{255, 192, 203, 255}, "R + W"},
+			{"Light Yellow", color.RGBA{255, 255, 150, 255}, "Y + W"},
+			{"Light Blue", color.RGBA{173, 216, 230, 255}, "B + W"},
+		}
+
+		mixes3 := []legItem{
+			{"Black", color.RGBA{0, 0, 0, 255}, "R + Y + B"},
+			{"Light Orange", color.RGBA{255, 200, 100, 255}, "R + Y + W"},
+			{"Light Green", color.RGBA{150, 255, 150, 255}, "Y + B + W"},
+			{"Light Lilla", color.RGBA{200, 150, 255, 255}, "R + B + W"},
+			{"Grey", color.RGBA{150, 150, 150, 255}, "R + Y + B + W"},
+			{"Absorbed", color.RGBA{100, 100, 100, 255}, "Hits Black"},
+		}
+
+		drawList := func(items []legItem, startX, startY float64, title string) {
+			listTitleOp := &text.DrawOptions{}
+			listTitleOp.ColorScale.ScaleWithColor(color.RGBA{200, 200, 100, 255})
+			listTitleOp.GeoM.Translate(startX, startY)
+			text.Draw(screen, title, g.defaultFace, listTitleOp)
+
+			y := startY + 30
+			for _, it := range items {
+				vector.DrawFilledRect(screen, float32(startX), float32(y), 20, 20, it.clr, false)
+				vector.StrokeRect(screen, float32(startX), float32(y), 20, 20, 1, color.White, false)
+
+				iOp := &text.DrawOptions{}
+				iOp.ColorScale.ScaleWithColor(color.White)
+				iOp.GeoM.Translate(startX+35, y+4)
+				text.Draw(screen, fmt.Sprintf("%s (%s)", it.name, it.formula), g.defaultFace, iOp)
+				y += 35
+			}
+		}
+
+		drawList(bases, float64(panelX+50), float64(panelY+100), "Base Colors")
+		drawList(mixes2, float64(panelX+280), float64(panelY+100), "2-Color Mixes")
+		drawList(mixes3, float64(panelX+510), float64(panelY+100), "3+ Color Mixes")
+	}
 }
 
 func (g *Game) Layout(w, h int) (int, int) { return ScreenWidth, ScreenHeight }
