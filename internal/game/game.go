@@ -13,6 +13,10 @@ import (
 	"golang.org/x/image/font/basicfont"
 )
 
+type Point struct {
+	X, Y float32
+}
+
 type Game struct {
 	allShapes     []*Shape
 	shapes        []*Shape
@@ -39,10 +43,16 @@ type Game struct {
 	editingIndex  int
 	cursorCounter int
 
-	marks       map[GridPoint]bool
-	isMarking   bool
-	markingMode bool
-	labelMarks  map[string]bool
+	marks            map[GridPoint]bool
+	isRightMarking   bool
+	rightMarkingMode bool
+
+	whiteStrokes   [][]Point
+	isDrawingWhite bool
+	isEraserMode   bool
+	isErasingWhite bool
+
+	labelMarks map[string]bool
 
 	resetConfirm  bool
 	board1Invalid bool
@@ -50,6 +60,7 @@ type Game struct {
 	showBlack       bool
 	showTransparent bool
 	showLegend      bool
+	board1Locked    bool
 }
 
 func New() *Game {
@@ -62,6 +73,8 @@ func New() *Game {
 		showBlack:       true,
 		showTransparent: true,
 		showLegend:      false,
+		isEraserMode:    false,
+		board1Locked:    false,
 	}
 	g.initBoard()
 	return g
@@ -162,9 +175,39 @@ func validateBoard(shapes []*Shape) bool {
 	return true
 }
 
+func (g *Game) eraseWhiteStrokes(mx, my float32) {
+	var newStrokes [][]Point
+	eraserRadius := float64(15.0)
+
+	for _, stroke := range g.whiteStrokes {
+		var currentNewStroke []Point
+		for _, pt := range stroke {
+			dist := math.Hypot(float64(pt.X-mx), float64(pt.Y-my))
+			if dist > eraserRadius {
+				currentNewStroke = append(currentNewStroke, pt)
+			} else {
+				if len(currentNewStroke) > 0 {
+					newStrokes = append(newStrokes, currentNewStroke)
+					currentNewStroke = nil
+				}
+			}
+		}
+		if len(currentNewStroke) > 0 {
+			newStrokes = append(newStrokes, currentNewStroke)
+		}
+	}
+	g.whiteStrokes = newStrokes
+}
+
 func (g *Game) Update() error {
 	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
 		ebiten.SetFullscreen(!ebiten.IsFullscreen())
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyE) {
+		if !g.isTyping {
+			g.isEraserMode = !g.isEraserMode
+		}
 	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) && g.showLegend {
@@ -225,26 +268,30 @@ func (g *Game) Update() error {
 		s := g.shapes[g.selectedIndex]
 		oldX, oldY, oldRot, oldFlip := s.gridX, s.gridY, s.rotationSteps, s.flipped
 
-		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || inpututil.IsKeyJustPressed(ebiten.KeyH) {
-			s.gridX--
-			moved = true
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || inpututil.IsKeyJustPressed(ebiten.KeyL) {
-			s.gridX++
-			moved = true
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyK) {
-			s.gridY--
-			moved = true
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyJ) {
-			s.gridY++
-			moved = true
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
-			s.Rotate()
-			moved = true
-			rotated = true
-		} else if inpututil.IsKeyJustPressed(ebiten.KeyF) {
-			s.Flip()
-			moved = true
-			rotated = true
+		canMove := !(s.board == 1 && g.board1Locked)
+
+		if canMove {
+			if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) || inpututil.IsKeyJustPressed(ebiten.KeyH) {
+				s.gridX--
+				moved = true
+			} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) || inpututil.IsKeyJustPressed(ebiten.KeyL) {
+				s.gridX++
+				moved = true
+			} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeyK) {
+				s.gridY--
+				moved = true
+			} else if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) || inpututil.IsKeyJustPressed(ebiten.KeyJ) {
+				s.gridY++
+				moved = true
+			} else if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+				s.Rotate()
+				moved = true
+				rotated = true
+			} else if inpututil.IsKeyJustPressed(ebiten.KeyF) {
+				s.Flip()
+				moved = true
+				rotated = true
+			}
 		}
 
 		if inpututil.IsKeyJustPressed(ebiten.KeyTab) {
@@ -284,6 +331,12 @@ func (g *Game) Update() error {
 		clickedToggle := false
 
 		if mx >= ScreenWidth-570 && mx <= ScreenWidth-440 && my >= 20 && my <= 60 {
+			g.board1Locked = !g.board1Locked
+			clickedToggle = true
+			g.resetConfirm = false
+		}
+
+		if mx >= ScreenWidth-150 && mx <= ScreenWidth-20 && my >= 70 && my <= 110 {
 			g.showLegend = !g.showLegend
 			clickedToggle = true
 			g.resetConfirm = false
@@ -303,9 +356,11 @@ func (g *Game) Update() error {
 				g.initBoard()
 				g.notes = nil
 				g.marks = make(map[GridPoint]bool)
+				g.whiteStrokes = nil
 				g.labelMarks = make(map[string]bool)
 				g.rayActive, g.resetConfirm = false, false
 				g.lastRay = nil
+				g.board1Locked = false
 			} else {
 				g.resetConfirm = true
 			}
@@ -365,98 +420,133 @@ func (g *Game) Update() error {
 			clickedB2Label := false
 
 			if !clickedShape {
-				if b2XGrid >= 0 && b2XGrid < cols && b2YGrid >= 0 && b2YGrid < rows {
-					g.isMarking = true
-					pt := GridPoint{X: float64(b2XGrid), Y: float64(b2YGrid)}
-					g.markingMode = !g.marks[pt]
-					g.marks[pt] = g.markingMode
-				} else {
-					for i := range cols {
-						if math.Hypot(float64(mx)-(grid1OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY-15)) < 20 {
-							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, 0, 0, 1, 1
-							clickedLaserLabel = true
-						}
-						if math.Hypot(float64(mx)-(grid1OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY+float64(rows*tileSize)+15)) < 20 {
-							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, float64(rows), 0, -1, 1
-							clickedLaserLabel = true
-						}
+				for i := range cols {
+					if math.Hypot(float64(mx)-(grid1OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY-15)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, 0, 0, 1, 1
+						clickedLaserLabel = true
 					}
-					for j := range rows {
-						if math.Hypot(float64(mx)-(grid1OffsetX-15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
-							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, 0, float64(j)+0.5, 1, 0, 1
-							clickedLaserLabel = true
-						}
-						if math.Hypot(float64(mx)-(grid1OffsetX+float64(cols*tileSize)+15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
-							g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(cols), float64(j)+0.5, -1, 0, 1
-							clickedLaserLabel = true
-						}
-					}
-
-					leftLetters := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
-					bottomLetters := []string{"i", "j", "k", "l", "m", "n", "o", "p", "q", "r"}
-					for i := range cols {
-						if math.Hypot(float64(mx)-(grid2OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY-15)) < 20 {
-							key := fmt.Sprintf("top-%d", i)
-							g.labelMarks[key] = !g.labelMarks[key]
-							clickedB2Label = true
-						}
-						if math.Hypot(float64(mx)-(grid2OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY+float64(rows*tileSize)+15)) < 20 {
-							key := "bot-" + bottomLetters[i]
-							g.labelMarks[key] = !g.labelMarks[key]
-							clickedB2Label = true
-						}
-					}
-					for j := range rows {
-						if math.Hypot(float64(mx)-(grid2OffsetX-15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
-							key := "left-" + leftLetters[j]
-							g.labelMarks[key] = !g.labelMarks[key]
-							clickedB2Label = true
-						}
-						if math.Hypot(float64(mx)-(grid2OffsetX+float64(cols*tileSize)+15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
-							key := fmt.Sprintf("right-%d", j+11)
-							g.labelMarks[key] = !g.labelMarks[key]
-							clickedB2Label = true
-						}
+					if math.Hypot(float64(mx)-(grid1OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY+float64(rows*tileSize)+15)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(i)+0.5, float64(rows), 0, -1, 1
+						clickedLaserLabel = true
 					}
 				}
-			}
+				for j := range rows {
+					if math.Hypot(float64(mx)-(grid1OffsetX-15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, 0, float64(j)+0.5, 1, 0, 1
+						clickedLaserLabel = true
+					}
+					if math.Hypot(float64(mx)-(grid1OffsetX+float64(cols*tileSize)+15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
+						g.rayActive, g.rayFrame, g.rayStartX, g.rayStartY, g.rayDirX, g.rayDirY, g.activeRayBoard = true, 0, float64(cols), float64(j)+0.5, -1, 0, 1
+						clickedLaserLabel = true
+					}
+				}
 
-			inGrid1 := mx >= grid1OffsetX && mx <= grid1OffsetX+cols*tileSize && my >= gridOffsetY && my <= gridOffsetY+rows*tileSize
-			inGrid2 := mx >= grid2OffsetX && mx <= grid2OffsetX+cols*tileSize && my >= gridOffsetY && my <= gridOffsetY+rows*tileSize
+				leftLetters := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+				bottomLetters := []string{"i", "j", "k", "l", "m", "n", "o", "p", "q", "r"}
+				for i := range cols {
+					if math.Hypot(float64(mx)-(grid2OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY-15)) < 20 {
+						key := fmt.Sprintf("top-%d", i)
+						g.labelMarks[key] = !g.labelMarks[key]
+						clickedB2Label = true
+					}
+					if math.Hypot(float64(mx)-(grid2OffsetX+float64(i*tileSize)+20), float64(my)-(gridOffsetY+float64(rows*tileSize)+15)) < 20 {
+						key := "bot-" + bottomLetters[i]
+						g.labelMarks[key] = !g.labelMarks[key]
+						clickedB2Label = true
+					}
+				}
+				for j := range rows {
+					if math.Hypot(float64(mx)-(grid2OffsetX-15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
+						key := "left-" + leftLetters[j]
+						g.labelMarks[key] = !g.labelMarks[key]
+						clickedB2Label = true
+					}
+					if math.Hypot(float64(mx)-(grid2OffsetX+float64(cols*tileSize)+15), float64(my)-(gridOffsetY+float64(j*tileSize)+20)) < 20 {
+						key := fmt.Sprintf("right-%d", j+11)
+						g.labelMarks[key] = !g.labelMarks[key]
+						clickedB2Label = true
+					}
+				}
 
-			if !inGrid1 && !inGrid2 && !clickedLaserLabel && !clickedB2Label && !clickedShape {
-				g.rayActive = false
-				g.lastRay = nil
+				inGrid1 := mx >= grid1OffsetX && mx <= grid1OffsetX+cols*tileSize && my >= gridOffsetY && my <= gridOffsetY+rows*tileSize
+				inGrid2 := mx >= grid2OffsetX && mx <= grid2OffsetX+cols*tileSize && my >= gridOffsetY && my <= gridOffsetY+rows*tileSize
+
+				if !clickedLaserLabel && !clickedB2Label && (inGrid1 || inGrid2) {
+					if g.isEraserMode {
+						g.isErasingWhite = true
+						g.eraseWhiteStrokes(float32(mx), float32(my))
+					} else {
+						g.isDrawingWhite = true
+						g.whiteStrokes = append(g.whiteStrokes, []Point{{float32(mx), float32(my)}})
+					}
+				}
+
+				if !inGrid1 && !inGrid2 && !clickedLaserLabel && !clickedB2Label {
+					g.rayActive = false
+					g.lastRay = nil
+				}
 			}
+		}
+	}
+
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) {
+		if b2XGrid >= 0 && b2XGrid < cols && b2YGrid >= 0 && b2YGrid < rows {
+			g.isRightMarking = true
+			pt := GridPoint{X: float64(b2XGrid), Y: float64(b2YGrid)}
+			g.rightMarkingMode = !g.marks[pt]
+			g.marks[pt] = g.rightMarkingMode
 		}
 	}
 
 	if g.isDragging && ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
 		s := g.shapes[g.selectedIndex]
-		offX := float64(grid1OffsetX)
-		if s.board == 2 {
-			offX = float64(grid2OffsetX)
-		}
-		curXGrid := int(math.Floor((float64(mx) - offX) / float64(tileSize)))
-		curYGrid := int(math.Floor(float64(my-gridOffsetY) / float64(tileSize)))
-		dx, dy := curXGrid-g.dragMouseGridX, curYGrid-g.dragMouseGridY
-		if dx != 0 || dy != 0 {
-			s.gridX, s.gridY = s.gridX+dx, s.gridY+dy
-			if !s.IsValidPosition() {
-				s.gridX, s.gridY = s.gridX-dx, s.gridY-dy
+
+		if !(s.board == 1 && g.board1Locked) {
+			offX := float64(grid1OffsetX)
+			if s.board == 2 {
+				offX = float64(grid2OffsetX)
 			}
-			g.dragMouseGridX, g.dragMouseGridY = curXGrid, curYGrid
+			curXGrid := int(math.Floor((float64(mx) - offX) / float64(tileSize)))
+			curYGrid := int(math.Floor(float64(my-gridOffsetY) / float64(tileSize)))
+			dx, dy := curXGrid-g.dragMouseGridX, curYGrid-g.dragMouseGridY
+			if dx != 0 || dy != 0 {
+				s.gridX, s.gridY = s.gridX+dx, s.gridY+dy
+				if !s.IsValidPosition() {
+					s.gridX, s.gridY = s.gridX-dx, s.gridY-dy
+				}
+				g.dragMouseGridX, g.dragMouseGridY = curXGrid, curYGrid
+			}
 		}
 	} else {
 		g.isDragging = false
 	}
 
-	if g.isMarking && ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
-		if b2XGrid >= 0 && b2XGrid < cols && b2YGrid >= 0 && b2YGrid < rows {
-			g.marks[GridPoint{X: float64(b2XGrid), Y: float64(b2YGrid)}] = g.markingMode
+	if g.isDrawingWhite && ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+		lastIdx := len(g.whiteStrokes) - 1
+		if lastIdx >= 0 {
+			lastStroke := g.whiteStrokes[lastIdx]
+			lastPt := lastStroke[len(lastStroke)-1]
+			if lastPt.X != float32(mx) || lastPt.Y != float32(my) {
+				g.whiteStrokes[lastIdx] = append(g.whiteStrokes[lastIdx], Point{float32(mx), float32(my)})
+			}
 		}
 	} else {
-		g.isMarking = false
+		g.isDrawingWhite = false
+	}
+
+	if g.isErasingWhite && ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
+		g.eraseWhiteStrokes(float32(mx), float32(my))
+	} else {
+		g.isErasingWhite = false
+	}
+
+	if g.isRightMarking && ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) {
+		if b2XGrid >= 0 && b2XGrid < cols && b2YGrid >= 0 && b2YGrid < rows {
+			pt := GridPoint{X: float64(b2XGrid), Y: float64(b2YGrid)}
+			g.marks[pt] = g.rightMarkingMode
+		}
+	} else {
+		g.isRightMarking = false
 	}
 
 	if g.rayActive {
@@ -492,6 +582,18 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	btnOp.GeoM.Translate(float64(btnX+btnW/2), float64(btnY+12))
 	text.Draw(screen, btnTxt, g.defaultFace, btnOp)
 
+	btnX4, btnY4, btnW4, btnH4 := float32(ScreenWidth-150), float32(70), float32(130), float32(40)
+	btnClr4 := color.RGBA{100, 100, 100, 255}
+	if g.showLegend {
+		btnClr4 = color.RGBA{50, 150, 50, 255}
+	}
+	vector.DrawFilledRect(screen, btnX4, btnY4, btnW4, btnH4, btnClr4, false)
+	btnOp4 := &text.DrawOptions{}
+	btnOp4.ColorScale.ScaleWithColor(color.White)
+	btnOp4.PrimaryAlign = text.AlignCenter
+	btnOp4.GeoM.Translate(float64(btnX4+btnW4/2), float64(btnY4+12))
+	text.Draw(screen, "LEGEND", g.defaultFace, btnOp4)
+
 	btnX2, btnY2, btnW2, btnH2 := float32(ScreenWidth-290), float32(20), float32(130), float32(40)
 	btnClr2 := color.RGBA{50, 150, 50, 255}
 	btnTxt2 := "BLACK: ON"
@@ -520,17 +622,19 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	btnOp3.GeoM.Translate(float64(btnX3+btnW3/2), float64(btnY3+12))
 	text.Draw(screen, btnTxt3, g.defaultFace, btnOp3)
 
-	btnX4, btnY4, btnW4, btnH4 := float32(ScreenWidth-570), float32(20), float32(130), float32(40)
-	btnClr4 := color.RGBA{100, 100, 100, 255}
-	if g.showLegend {
-		btnClr4 = color.RGBA{50, 150, 50, 255}
+	btnX5, btnY5, btnW5, btnH5 := float32(ScreenWidth-570), float32(20), float32(130), float32(40)
+	btnClr5 := color.RGBA{150, 50, 50, 255}
+	btnTxt5 := "P1 LOCK: OFF"
+	if g.board1Locked {
+		btnClr5 = color.RGBA{50, 150, 50, 255}
+		btnTxt5 = "P1 LOCK: ON"
 	}
-	vector.DrawFilledRect(screen, btnX4, btnY4, btnW4, btnH4, btnClr4, false)
-	btnOp4 := &text.DrawOptions{}
-	btnOp4.ColorScale.ScaleWithColor(color.White)
-	btnOp4.PrimaryAlign = text.AlignCenter
-	btnOp4.GeoM.Translate(float64(btnX4+btnW4/2), float64(btnY4+12))
-	text.Draw(screen, "LEGEND", g.defaultFace, btnOp4)
+	vector.DrawFilledRect(screen, btnX5, btnY5, btnW5, btnH5, btnClr5, false)
+	btnOp5 := &text.DrawOptions{}
+	btnOp5.ColorScale.ScaleWithColor(color.White)
+	btnOp5.PrimaryAlign = text.AlignCenter
+	btnOp5.GeoM.Translate(float64(btnX5+btnW5/2), float64(btnY5+12))
+	text.Draw(screen, btnTxt5, g.defaultFace, btnOp5)
 
 	titleStr := "ORAPA MINES"
 	titleOp := &text.DrawOptions{}
@@ -627,6 +731,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				txtOp.ColorScale.ScaleWithColor(color.White)
 			}
 			text.Draw(screen, lRight, g.defaultFace, txtOp)
+		}
+	}
+
+	for _, stroke := range g.whiteStrokes {
+		if len(stroke) == 1 {
+			vector.DrawFilledRect(screen, stroke[0].X-1.5, stroke[0].Y-1.5, 3, 3, color.White, false)
+		} else {
+			for i := 0; i < len(stroke)-1; i++ {
+				vector.StrokeLine(screen, stroke[i].X, stroke[i].Y, stroke[i+1].X, stroke[i+1].Y, 3, color.White, true)
+			}
 		}
 	}
 
@@ -733,7 +847,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	cmdOp.ColorScale.ScaleWithColor(color.RGBA{150, 150, 150, 255})
 	cmdOp.PrimaryAlign = text.AlignCenter
 	cmdOp.GeoM.Translate(float64(ScreenWidth/2), float64(ScreenHeight-25))
-	text.Draw(screen, "Move: Drag/HJKL | Rot: R | Flip: F | Tab/Click: Switch | F11: Fullscreen | Note: Enter", g.defaultFace, cmdOp)
+
+	brushMode := "DRAW"
+	if g.isEraserMode {
+		brushMode = "ERASE"
+	}
+	legendText := fmt.Sprintf("L-Click: %s (E to Toggle) | R-Click: Red Cross | Drag/HJKL: Move | R: Rot | F: Flip", brushMode)
+	text.Draw(screen, legendText, g.defaultFace, cmdOp)
 
 	if g.showLegend {
 		panelX, panelY := float32(150), float32(120)
